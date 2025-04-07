@@ -1,17 +1,36 @@
 import os
 import random
 from functools import wraps
+import tempfile
 
 import numpy as np
 import torch
 import faiss
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
+def generate_random_permutation(N, seed=None):
+    generator = torch.Generator()
+    if seed is not None:
+        generator.manual_seed(seed)
+    
+    return torch.randperm(N, generator=generator)
+
+def download_model():
+    temp_dir = "/tmp/tabdpt_model"
+    model_path = os.path.join(temp_dir, "tabdpt1_1.pth")
+    if not os.path.exists(os.path.join(temp_dir, model_path)):
+        os.makedirs(temp_dir, exist_ok=True)
+        os.system(f"gdown --id 1ARFl7uQ6bwcpP9lTPqDv1_G0M3VDW3mI -O {model_path}")
+    return model_path
+
 def flash_context(func):
     @wraps(func)
     def wrapper(self, *args, **kwargs):
         if getattr(self, "use_flash", False):
-            with torch.autocast(device_type='cuda', dtype=torch.bfloat16), sdpa_kernel(SDPBackend.FLASH_ATTENTION):
+            assert torch.cuda.is_available(), "FlashAttention requires CUDA support"
+            bf_support = torch.cuda.get_device_capability()[0] >= 8
+            dtype = torch.bfloat16 if bf_support else torch.float16
+            with torch.autocast(device_type='cuda', dtype=dtype), sdpa_kernel(SDPBackend.FLASH_ATTENTION):
                 return func(self, *args, **kwargs)
         else:
             return func(self, *args, **kwargs)
@@ -22,15 +41,15 @@ def maskmean(x, mask, dim):
     return x.sum(dim=dim, keepdim=True) / mask.sum(dim=dim, keepdim=True)
 
 
-def maskstd(x, mask, dim=1):
+def maskstd(x, mask, dim=0):
     num = mask.sum(dim=dim, keepdim=True)
-    mean = maskmean(x, mask, dim=dim)
+    mean = maskmean(x, mask, dim=0)
     diffs = torch.where(mask, mean - x, 0)
-    return ((diffs**2).sum(dim=dim, keepdim=True) / (num - 1)) ** 0.5
+    return ((diffs**2).sum(dim=0, keepdim=True) / (num - 1)) ** 0.5
 
 
-def normalize_data(data, eval_pos=-1, dim=1, return_mean_std: bool = False):
-    X = data[:, :eval_pos] if eval_pos > 0 else data
+def normalize_data(data, eval_pos=-1, dim=0, return_mean_std: bool = False):
+    X = data[:eval_pos] if eval_pos > 0 else data
     mask = ~torch.isnan(X)
     mean = maskmean(X, mask, dim=dim)
     std = maskstd(X, mask, dim=dim) + 1e-6
@@ -40,8 +59,8 @@ def normalize_data(data, eval_pos=-1, dim=1, return_mean_std: bool = False):
     return data
 
 
-def clip_outliers(data, eval_pos=-1, n_sigma=4, dim=1):
-    X = data[:, :eval_pos] if eval_pos > 0 else data
+def clip_outliers(data, eval_pos=-1, n_sigma=4, dim=0):
+    X = data[:eval_pos] if eval_pos > 0 else data
     mask = ~torch.isnan(X)
     mean = maskmean(X, mask, dim=dim)
     cutoff = n_sigma * maskstd(X, mask, dim=dim)
