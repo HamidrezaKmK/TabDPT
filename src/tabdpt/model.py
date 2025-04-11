@@ -52,9 +52,9 @@ class TabDPTModel(nn.Module):
         y_src = y_src.squeeze(-1).transpose(0, 1)
         eval_pos = y_src.shape[0]
         assert x_src.shape[1] == y_src.shape[1], "x_src and y_src must have the same batch size"
-        x_src = clip_outliers(x_src, -1 if self.training else eval_pos, n_sigma=4)
-        x_src = normalize_data(x_src, -1 if self.training else eval_pos)
-        x_src = clip_outliers(x_src, -1 if self.training else eval_pos, n_sigma=4)
+        x_src = clip_outliers(x_src, eval_pos, n_sigma=4)
+        x_src = normalize_data(x_src, eval_pos)
+        x_src = clip_outliers(x_src, eval_pos, n_sigma=4)
         if task == "reg":
             y_src, mean_y, std_y = normalize_data(y_src, return_mean_std=True)
             y_src = clip_outliers(y_src)
